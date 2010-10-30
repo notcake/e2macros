@@ -40,7 +40,9 @@ function Context:AppendExpansion (lineNumber, spacing, expansionName, alreadyExp
 	alreadyExpanded [expansionName] = true
 	local expansion = self:LookupExpansionRecursive (expansionName)
 	if expansion then
-		self.Lines [#self.Lines + 1] = spacing .. "# mexpanded " .. expansionName
+		if #alreadyExpanded == 1 then
+			self.Lines [#self.Lines + 1] = spacing .. "#@@mexpanded " .. expansionName
+		end
 		self.LineMap [#self.Lines] = lineNumber
 		for i = 1, #expansion do
 			local isDirective, directiveType, directiveArguments = E2Macros.ProcessLine (expansion [i])
@@ -51,13 +53,11 @@ function Context:AppendExpansion (lineNumber, spacing, expansionName, alreadyExp
 						alreadyExpanded [#alreadyExpanded] = nil
 						return expansionError .. " in expansion \"" .. expansionName .. "\""
 					end
+				else
+					self.Lines [#self.Lines + 1] = expansion [i]
 				end
 			else
-				if expansion [i]:sub (1, 1) == "@" then
-					self.Lines [#self.Lines + 1] = expansion [i]
-				else
-					self.Lines [#self.Lines + 1] = spacing .. "    " .. expansion [i]
-				end
+				self.Lines [#self.Lines + 1] = spacing .. "    " .. expansion [i]
 				local expansionList = alreadyExpanded [1] .. "\""
 				for i = 2, #alreadyExpanded do
 					expansionList = alreadyExpanded [i] .. "\" in expansion \"" .. expansionList
@@ -66,7 +66,9 @@ function Context:AppendExpansion (lineNumber, spacing, expansionName, alreadyExp
 				self.LineTrace [#self.Lines] = "in expansion \"" .. expansionList
 			end
 		end
-		self.Lines [#self.Lines + 1] = spacing .. "# mendexp"
+		if #alreadyExpanded == 1 then
+			self.Lines [#self.Lines + 1] = spacing .. "#@@mendexp"
+		end
 		self.LineMap [#self.Lines] = lineNumber
 	else
 		alreadyExpanded [#alreadyExpanded] = nil
@@ -109,20 +111,19 @@ function Context:ContractCode (code)
 	local defineLevel = 0
 	
 	for _, line in ipairs (lines) do
-		local isDirective, directiveType, directiveArguments = E2Macros.ProcessLine (line)
+		local isDirective, directiveType, directiveArguments = E2Macros.ProcessExpandedLine (line)
 		local hideLine = expansionLevel > 0
-		local uncomment = defineLevel > 0
+		local uncomment = defineLevel > 0 or isDirective
 		if isDirective then
 			if directiveType == "define" then
 				defineLevel = defineLevel + 1
 			elseif directiveType == "end" then
 				defineLevel = defineLevel - 1
-				uncomment = false
 			elseif directiveType == "mexpanded" then
 				if directiveArguments then
 					if expansionLevel == 0 then
 						local spacing = line:sub (1, line:find ("#") - 1)
-						self.Lines [#self.Lines + 1] = spacing .. "# expand ".. directiveArguments
+						self.Lines [#self.Lines + 1] = spacing .. "@expand ".. directiveArguments
 					end
 					expansionLevel = expansionLevel + 1
 					hideLine = true
@@ -137,8 +138,8 @@ function Context:ContractCode (code)
 		end
 		if not hideLine then
 			if uncomment then
-				if line:sub (1, 1) == "#" then
-					line = line:sub (2)
+				if line:sub (1, 2) == "#@" then
+					line = line:sub (3)
 				end
 			end
 			self.Lines [#self.Lines + 1] = line
@@ -168,6 +169,7 @@ function Context:ExpandCode (code)
 						self.Errors [#self.Errors + 1] = "Cannot import \"" .. directiveArguments .. "\" at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 					end
 				end
+				comment = true
 			elseif directiveType == "define" then
 				if not directiveArguments then
 					self.Errors [#self.Errors + 1] = "Expected definition name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
@@ -175,19 +177,23 @@ function Context:ExpandCode (code)
 					self.Expansions [directiveArguments] = {}
 					expansionDefinitions [#expansionDefinitions + 1] = self.Expansions [directiveArguments]
 				end
+				comment = true
 			elseif directiveType == "end" then
 				expansionDefinitions [#expansionDefinitions] = nil
-				comment = #expansionDefinitions > 0
+				comment = true
 			elseif directiveType == "expand" then
 				addToExpansions = true
 				if #expansionDefinitions == 0 then
-					local spacing = line:sub (1, line:find ("#") - 1)
+					local spacing = line:sub (1, line:find ("@") - 1)
 					local expansionError = self:AppendExpansion (lineNumber, spacing, directiveArguments)
 					if expansionError then
 						self.Errors [#self.Errors + 1] = expansionError .. " at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 					end
 					hideLine = true
 				end
+			else
+				addToExpansions = true
+				comment = false
 			end
 		end
 		if addToExpansions then
@@ -197,7 +203,7 @@ function Context:ExpandCode (code)
 		end
 		if not hideLine then
 			if comment then
-				line = "#" .. line
+				line = "#@" .. line
 			end
 			self.Lines [#self.Lines + 1] = line
 			self.LineMap [#self.Lines] = lineNumber
@@ -303,12 +309,12 @@ function Context:ProcessCode (code)
 				addToExpansions = true
 			elseif directiveType == "end" then
 				expansionDefinitions [#expansionDefinitions] = nil
+			else
+				addToExpansions = true
 			end
 		else
-			if line:sub (1, 1) ~= "@" then
-				line = line:gsub (" +%(", "(")
-				line = line:gsub (" +%[", "[")
-			end
+			line = line:gsub (" +%(", "(")
+			line = line:gsub (" +%[", "[")
 		end
 		if addToExpansions then
 			for i = 1, #expansionDefinitions do
