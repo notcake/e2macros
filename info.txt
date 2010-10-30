@@ -1,0 +1,8 @@
+"AddonInfo"
+{
+	"name"        "E2 Macros"
+	"version"     "1.0"
+	"author_name" "!cake"
+	"info"        "E2 Macros addon"
+	"override"    "0"
+}
