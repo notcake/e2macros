@@ -116,5 +116,18 @@ hook.Add ("Think", "E2MacrosInit", function ()
 		end
 		hook.Function = E2Macros.wire_expression2_download
 	end
+	
+	-- Syntax highlighting
+	local name, vguiMetatables = debug.getupvalue (vgui.Register, 1)
+	if name == "PanelFactory" then
+		local editorMetatable = vguiMetatables ["Expression2Editor"]
+		local name, directives = debug.getupvalue (editorMetatable.SyntaxColorLine, 1)
+		if name == "directives" then
+			directives ["@end"] = 0
+			directives ["@define"] = 0
+			directives ["@expand"] = 0
+			directives ["@import"] = 0
+		end
+	end
 	hook.Remove ("Think", "E2MacrosInit")
 end)
