@@ -1,6 +1,13 @@
 local Context = {}
 Context.__index = Context
 
+local directives = {
+	["define"] = true,
+	["end"] = true,
+	["expand"] = true,
+	["import"] = true
+}
+
 function E2Macros.Context (...)
 	local Object = {}
 	setmetatable (Object, Context)
@@ -14,21 +21,41 @@ function Context:ctor (fileName)
 	
 	self.LastProcessTime = 0
 	self.Code = nil
-	self.Errors = {}
 	
-	self.OriginalLines = {}
-	self.Lines = {}
-	self.LineMap = {}
-	self.LineTrace = {}
-	
-	self.Imports = {}
-	self.ImportTable = nil
-	self.ImportTableValid = false
-	self.Expansions = {}
+	self:Reset ()
+end
+
+function Context:AddExpansionDefinitionLine (line, directiveType, directiveArguments)
+	for i = 1, #self.CurrentExpansions do
+		self.CurrentExpansions [i].Lines [#self.CurrentExpansions [i].Lines + 1] = line
+	end
+	if self.CurrentExpansions.ArgumentCount > 0 then
+		local success, tokens = E2Macros.Tokenizer:Execute (line, directiveType, directiveArguments)
+		if success then
+			for i = 1, #tokens do
+				local tokenString = tokens [i] [2]
+				local argumentEntry = self.CurrentExpansions.Arguments [tokenString]
+				if argumentEntry then
+					for j = 1, #argumentEntry do
+						local expansion = argumentEntry [j]
+						local argumentIndex = expansion.Arguments [tokenString]
+						expansion.ArgumentLines [#expansion.Lines] = expansion.ArgumentLines [#expansion.Lines] or {}
+						local lineEntry = expansion.ArgumentLines [#expansion.Lines]
+						lineEntry [#lineEntry + 1] = {
+							Argument = argumentIndex,
+							Start = tokens [i] [5],
+							End = tokens [i] [5] + tokenString:len () - 1
+						}
+					end
+				end
+			end
+		end
+	end
 end
 
 -- Expands a macro recursively
-function Context:AppendExpansion (lineNumber, spacing, expansionName, alreadyExpanded)
+function Context:AppendExpansion (lineNumber, spacing, expansionArguments, alreadyExpanded)
+	local expansionName = expansionArguments [1]
 	if not expansionName then
 		return "Expansion name is missing"
 	end
@@ -38,38 +65,63 @@ function Context:AppendExpansion (lineNumber, spacing, expansionName, alreadyExp
 	end
 	alreadyExpanded [#alreadyExpanded + 1] = expansionName
 	alreadyExpanded [expansionName] = true
-	local expansion = self:LookupExpansionRecursive (expansionName)
-	if expansion then
+	local expansionEntry = self:LookupExpansionRecursive (expansionName)
+	if expansionEntry then
 		if #alreadyExpanded == 1 then
-			self.Lines [#self.Lines + 1] = spacing .. "#@@mexpanded " .. expansionName
+			local originalLine = self.OriginalLines [lineNumber]
+			self.Lines [#self.Lines + 1] = spacing .. "#@@mexpanded" .. originalLine:sub (originalLine:find ("expand") + string.len ("expand"))
+			self.LineMap [#self.Lines] = lineNumber
 		end
-		self.LineMap [#self.Lines] = lineNumber
-		for i = 1, #expansion do
-			local isDirective, directiveType, directiveArguments = E2Macros.ProcessLine (expansion [i])
-			if isDirective then
+		
+		-- Generate expansion trace
+		local expansionTrace = alreadyExpanded [1] .. "\""
+		for i = 2, #alreadyExpanded do
+			expansionTrace = alreadyExpanded [i] .. "\" in expansion \"" .. expansionTrace
+		end
+		expansionTrace = "in expansion \"" .. expansionTrace
+		
+		-- Expand
+		if #expansionArguments - 1 < #expansionEntry.Arguments then
+			return "Not enough arguments for expansion of \"" .. expansionName .. "\""
+		elseif #expansionArguments - 1 > #expansionEntry.Arguments then
+			return "Too many arguments for expansion of \"" .. expansionName .. "\""
+		end
+		for i = 1, #expansionEntry.Lines do
+			local line = expansionEntry.Lines [i]
+			if expansionEntry.ArgumentLines [i] then
+				line = ""
+				for j = 1, #expansionEntry.ArgumentLines [i] do
+					local part = expansionEntry.ArgumentLines [i] [j]
+					if part.Argument then
+						line = line .. expansionArguments [part.Argument + 1]
+					else
+						line = line .. expansionEntry.Lines [i]:sub (part.Start, part.End)
+					end
+				end
+			end
+			local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
+			if directiveType then
 				if directiveType == "expand" then
-					local expansionError = self:AppendExpansion (lineNumber, spacing .. "    ", directiveArguments, alreadyExpanded)
+					local expansionError = self:AppendExpansion (lineNumber, spacing .. "    ", explodedArguments, alreadyExpanded)
 					if expansionError then
 						alreadyExpanded [#alreadyExpanded] = nil
 						return expansionError .. " in expansion \"" .. expansionName .. "\""
 					end
 				else
-					self.Lines [#self.Lines + 1] = expansion [i]
+					self.Lines [#self.Lines + 1] = line
+					self.LineMap [#self.Lines] = lineNumber
+					self.LineTrace [#self.Lines] = expansionTrace
 				end
 			else
-				self.Lines [#self.Lines + 1] = spacing .. "    " .. expansion [i]
-				local expansionList = alreadyExpanded [1] .. "\""
-				for i = 2, #alreadyExpanded do
-					expansionList = alreadyExpanded [i] .. "\" in expansion \"" .. expansionList
-				end
+				self.Lines [#self.Lines + 1] = spacing .. "    " .. line
 				self.LineMap [#self.Lines] = lineNumber
-				self.LineTrace [#self.Lines] = "in expansion \"" .. expansionList
+				self.LineTrace [#self.Lines] = expansionTrace
 			end
 		end
 		if #alreadyExpanded == 1 then
 			self.Lines [#self.Lines + 1] = spacing .. "#@@mendexp"
+			self.LineMap [#self.Lines] = lineNumber
 		end
-		self.LineMap [#self.Lines] = lineNumber
 	else
 		alreadyExpanded [#alreadyExpanded] = nil
 		return "Failed to find macro expansion for \"" ..expansionName .. "\""
@@ -111,10 +163,10 @@ function Context:ContractCode (code)
 	local defineLevel = 0
 	
 	for _, line in ipairs (lines) do
-		local isDirective, directiveType, directiveArguments = E2Macros.ProcessExpandedLine (line)
+		local directiveType, directiveArguments = E2Macros.ProcessExpandedLine (line)
 		local hideLine = expansionLevel > 0
-		local uncomment = defineLevel > 0 or isDirective
-		if isDirective then
+		local uncomment = defineLevel > 0 or (directiveType and true)
+		if directiveType then
 			if directiveType == "define" then
 				defineLevel = defineLevel + 1
 			elseif directiveType == "end" then
@@ -134,11 +186,16 @@ function Context:ContractCode (code)
 					expansionLevel = 0
 				end
 				hideLine = true
+			elseif not directives [directiveType] then
+				uncomment = false
 			end
 		end
 		if not hideLine then
 			if uncomment then
-				if line:sub (1, 2) == "#@" then
+				if directiveType then
+					local directiveStart = line:find ("#@")
+					line = line:sub (1, directiveStart - 1) .. line:sub (directiveStart + 2)
+				elseif line:sub (1, 2) == "#@" then
 					line = line:sub (3)
 				end
 			end
@@ -152,14 +209,13 @@ function Context:ExpandCode (code)
 	self.Code = code
 	local lines = string.Explode ("\n", code)
 	self.OriginalLines = lines
-	local expansionDefinitions = {}
 	
 	for lineNumber, line in ipairs (lines) do
-		local isDirective, directiveType, directiveArguments = E2Macros.ProcessLine (line)
+		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
 		local hideLine = false
 		local addToExpansions = true
-		local comment = #expansionDefinitions > 0
-		if isDirective then
+		local comment = #self.CurrentExpansions > 0 or directiveType
+		if directiveType then
 			addToExpansions = false
 			if directiveType == "import" then
 				if not directiveArguments then
@@ -169,23 +225,19 @@ function Context:ExpandCode (code)
 						self.Errors [#self.Errors + 1] = "Cannot import \"" .. directiveArguments .. "\" at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 					end
 				end
-				comment = true
 			elseif directiveType == "define" then
 				if not directiveArguments then
 					self.Errors [#self.Errors + 1] = "Expected definition name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 				else
-					self.Expansions [directiveArguments] = {}
-					expansionDefinitions [#expansionDefinitions + 1] = self.Expansions [directiveArguments]
+					self:PushExpansionDefinition (explodedArguments)
 				end
-				comment = true
 			elseif directiveType == "end" then
-				expansionDefinitions [#expansionDefinitions] = nil
-				comment = true
+				self:PopExpansionDefinition ()
 			elseif directiveType == "expand" then
 				addToExpansions = true
-				if #expansionDefinitions == 0 then
+				if #self.CurrentExpansions == 0 then
 					local spacing = line:sub (1, line:find ("@") - 1)
-					local expansionError = self:AppendExpansion (lineNumber, spacing, directiveArguments)
+					local expansionError = self:AppendExpansion (lineNumber, spacing, explodedArguments)
 					if expansionError then
 						self.Errors [#self.Errors + 1] = expansionError .. " at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 					end
@@ -197,13 +249,16 @@ function Context:ExpandCode (code)
 			end
 		end
 		if addToExpansions then
-			for i = 1, #expansionDefinitions do
-				expansionDefinitions [i] [#expansionDefinitions [i] + 1] = line
-			end
+			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
 		end
 		if not hideLine then
 			if comment then
-				line = "#@" .. line
+				if directiveType then
+					local directiveStart = line:find ("@")
+					line = line:sub (1, directiveStart - 1) .. "#@" .. line:sub (directiveStart)
+				else
+					line = "#@" .. line
+				end
 			end
 			self.Lines [#self.Lines + 1] = line
 			self.LineMap [#self.Lines] = lineNumber
@@ -258,8 +313,7 @@ function Context:ImportFile (fileName)
 	end
 	self.Imports [fileName] = true
 	self.ImportTableValid = false
-	local context = E2Macros.ProcessFile (fileName)
-	if not context.Code then
+	if not E2Macros.ProcessFile (fileName).Code then
 		return false
 	end
 	return true
@@ -270,8 +324,7 @@ function Context:LookupExpansion (name)
 end
 
 function Context:LookupExpansionRecursive (name)
-	local importTable = self:GetImportTable ()
-	for _, context in pairs (importTable) do
+	for _, context in pairs (self:GetImportTable ()) do
 		local expansion = context:LookupExpansion (name)
 		if expansion then
 			return expansion
@@ -280,17 +333,55 @@ function Context:LookupExpansionRecursive (name)
 	return nil
 end
 
+function Context:PopExpansionDefinition ()
+	local expansion = self.CurrentExpansions [#self.CurrentExpansions]
+	if not expansion then
+		return
+	end
+	for i = 1, #expansion.Arguments do
+		local argumentName = expansion.Arguments [i]
+		self.CurrentExpansions.Arguments [argumentName] [#self.CurrentExpansions.Arguments [argumentName]] = nil
+		if #self.CurrentExpansions.Arguments [argumentName] == 0 then
+			self.CurrentExpansions.Arguments [argumentName] = nil
+		end
+	end
+	for lineNumber, lineEntry in pairs (expansion.ArgumentLines) do
+		local offset = 1
+		local lineParts = {}
+		for i = 1, #lineEntry do
+			if lineEntry [i].Start > i then
+				lineParts [#lineParts + 1] = {
+					Start = offset,
+					End = lineEntry [i].Start - 1
+				}
+			end
+			lineParts [#lineParts + 1] = {
+				Argument = lineEntry [i].Argument
+			}
+			offset = lineEntry [i].End + 1
+		end
+		if offset <= expansion.Lines [lineNumber]:len () then
+			lineParts [#lineParts + 1] = {
+				Start = offset,
+				End = expansion.Lines [lineNumber]:len ()
+			}
+		end
+		expansion.ArgumentLines [lineNumber] = lineParts
+	end
+	self.CurrentExpansions.ArgumentCount = self.CurrentExpansions.ArgumentCount - expansion.ArgumentCount
+	self.CurrentExpansions [#self.CurrentExpansions] = nil
+end
+
 -- Reads macros from an #import ed file.
 function Context:ProcessCode (code)
 	self.LastProcessTime = SysTime ()
 	
 	self.Code = code
 	local lines = string.Explode ("\n", code)
-	local expansionDefinitions = {}
 	for _, line in ipairs (lines) do
-		local isDirective, directiveType, directiveArguments = E2Macros.ProcessLine (line)
+		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
 		local addToExpansions = true
-		if isDirective then
+		if directiveType then
 			addToExpansions = false
 			if directiveType == "import" then
 				if not directiveArguments then
@@ -302,26 +393,47 @@ function Context:ProcessCode (code)
 				if not directiveArguments then
 					self.Errors [#self.Errors + 1] = "Expected definition name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 				else
-					self.Expansions [directiveArguments] = {}
-					expansionDefinitions [#expansionDefinitions + 1] = self.Expansions [directiveArguments]
+					self:PushExpansionDefinition (explodedArguments)
 				end
 			elseif directiveType == "expand" then
 				addToExpansions = true
 			elseif directiveType == "end" then
-				expansionDefinitions [#expansionDefinitions] = nil
+				self:PopExpansionDefinition ()
 			else
 				addToExpansions = true
 			end
 		else
 			line = line:gsub (" +%(", "(")
 			line = line:gsub (" +%[", "[")
-		end
-		if addToExpansions then
-			for i = 1, #expansionDefinitions do
-				expansionDefinitions [i] [#expansionDefinitions [i] + 1] = line
+			if string.find (line, "^[ \t]*#") then
+				addToExpansions = false
 			end
 		end
+		if addToExpansions then
+			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
+		end
 		self.Lines [#self.Lines + 1] = line
+	end
+end
+
+function Context:PushExpansionDefinition (directiveArguments)
+	local expansionName = directiveArguments [1]
+	local expansion = {
+		ArgumentCount = #directiveArguments - 1,
+		Arguments = {},
+		ArgumentLines = {},
+		Lines = {}
+	}
+	self.Expansions [expansionName] = expansion
+	self.CurrentExpansions [#self.CurrentExpansions + 1] = expansion
+	self.CurrentExpansions.ArgumentCount = self.CurrentExpansions.ArgumentCount + expansion.ArgumentCount
+	for i = 2, #directiveArguments do
+		expansion.Arguments [#expansion.Arguments + 1] = directiveArguments [i]
+		expansion.Arguments [directiveArguments [i]] = #expansion.Arguments
+		if not self.CurrentExpansions.Arguments [directiveArguments [i]] then
+			self.CurrentExpansions.Arguments [directiveArguments [i]] = {}
+		end
+		self.CurrentExpansions.Arguments [directiveArguments [i]] [#self.CurrentExpansions.Arguments [directiveArguments [i]] + 1] = expansion
 	end
 end
 
@@ -337,6 +449,14 @@ function Context:ReprocessCode ()
 		context:CheckForChanges ()
 	end
 
+	self:Reset ()
+	self:ProcessCode (self.Code)
+end
+
+function Context:Reset ()
+	self.Errors = {}
+	
+	self.OriginalLines = {}
 	self.Lines = {}
 	self.LineMap = {}
 	self.LineTrace = {}
@@ -345,7 +465,9 @@ function Context:ReprocessCode ()
 	self.ImportTable = nil
 	self.ImportTableValid = false
 	self.Expansions = {}
-	self.Errors = {}
 	
-	self:ProcessCode (self.Code)
+	self.CurrentExpansions = {
+		ArgumentCount = 0,
+		Arguments = {}
+	}
 end

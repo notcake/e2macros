@@ -2,6 +2,7 @@ if not E2Macros then
 	E2Macros = {}
 	E2Macros.Backup = {}
 	E2Macros.Files = {}
+	E2Macros.Tokenizer = nil
 else
 	E2Macros.Files = {}
 end
@@ -95,6 +96,36 @@ concommand.Add ("e2macros_rehook", function (_, _, args)
 end)
 
 hook.Add ("Think", "E2MacrosInit", function ()
+	E2Macros.Tokenizer = {}
+	setmetatable (E2Macros.Tokenizer, Tokenizer)
+	function E2Macros.Tokenizer:Execute (code, directiveType, directiveArguments)
+		if directiveType then
+			local offset = code:find (directiveType, 1, true)
+			local tokens = {
+				{
+					"var",
+					directiveType,
+					1,
+					offset
+				}
+			}
+			offset = offset + directiveType:len ()
+			for i = 1, #directiveArguments do
+				offset = code:find (directiveArguments [i], 1, true)
+				tokens [#tokens + 1] = {
+					"var",
+					directiveArguments [i],
+					false,
+					1,
+					offset
+				}
+				offset = offset + directiveArguments [i]:len ()
+			end
+			return true, tokens
+		end
+		return pcall (self.Process, self, code)
+	end
+
 	if not transfer or
 		not wire_expression2_validate then
 		return
