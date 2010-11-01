@@ -19,6 +19,12 @@ local directives = {
 	["import"] = true
 }
 
+local hiddenExpansionDirectives = {
+	["define"] = true,
+	["end"] = true,
+	["import"] = true
+}
+
 function E2Macros.Context (...)
 	local Object = {}
 	setmetatable (Object, Context)
@@ -200,9 +206,7 @@ function Context:ContractCode (code)
 				end
 			elseif directiveType == "mendexp" then
 				expansionLevel = expansionLevel - 1
-				if expansionLevel < 0 then
-					expansionLevel = 0
-				end
+				expansionLevel = expansionLevel < 0 and 0 or expansionLevel
 				hideLine = true
 			elseif not directives [directiveType] then
 				uncomment = false
@@ -218,70 +222,6 @@ function Context:ContractCode (code)
 				end
 			end
 			self.Lines [#self.Lines + 1] = line
-		end
-	end
-end
-
--- Expands macros for validation and sending to the server
-function Context:ExpandCode (code)
-	self.Code = code
-	self.OriginalLines = string.Explode ("\n", code)
-	
-	for lineNumber, line in ipairs (self.OriginalLines) do
-		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
-		local hideLine = false
-		local addToExpansions = true
-		local comment = #self.CurrentExpansions > 0 or directiveType
-		if directiveType then
-			addToExpansions = false
-			if directiveType == "import" then
-				if not directiveArguments then
-					self.Errors [#self.Errors + 1] = "Expected file name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
-				else
-					if not self:ImportFile (directiveArguments) then
-						self.Errors [#self.Errors + 1] = "Cannot import \"" .. directiveArguments .. "\" at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
-					end
-				end
-			elseif directiveType == "define" then
-				if not directiveArguments then
-					self.Errors [#self.Errors + 1] = "Expected definition name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
-				else
-					self:PushExpansionDefinition (explodedArguments)
-				end
-			elseif directiveType == "end" then
-				self:PopExpansionDefinition ()
-			elseif directiveType == "expand" then
-				addToExpansions = true
-				if #self.CurrentExpansions == 0 then
-					local spacing = line:sub (1, line:find ("@") - 1)
-					local expansionError = self:AppendExpansion (lineNumber, spacing, explodedArguments)
-					if expansionError then
-						self.Errors [#self.Errors + 1] = expansionError .. " at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
-					end
-					hideLine = true
-				end
-			else
-				addToExpansions = true
-				comment = false
-			end
-		end
-		if addToExpansions and #self.CurrentExpansions > 0 then
-			line = line:gsub (" +%(", "(")
-			line = line:gsub (" +%[", "[")
-			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
-		end
-		hideLine = hideLine or (self.ExpansionMode == ExpansionMode.Compact and comment)
-		if not hideLine then
-			if comment then
-				if directiveType then
-					local directiveStart = line:find ("@")
-					line = line:sub (1, directiveStart - 1) .. "#@" .. line:sub (directiveStart)
-				else
-					line = "#@" .. line
-				end
-			end
-			self.Lines [#self.Lines + 1] = line
-			self.LineMap [#self.Lines] = lineNumber
 		end
 	end
 end
@@ -396,22 +336,25 @@ function Context:PopExpansionDefinition ()
 	self.CurrentExpansions [#self.CurrentExpansions] = nil
 end
 
--- Reads macros from an #import ed file.
+-- Reads / expands macros.
 function Context:ProcessCode (code)
 	self.LastProcessTime = SysTime ()
 	
 	self.Code = code
 	self.OriginalLines = string.Explode ("\n", code)
-	for _, line in ipairs (self.OriginalLines) do
+	for lineNumber, line in ipairs (self.OriginalLines) do
 		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
-		local addToExpansions = true
+		local hideLine = false
+		local addToExpansions = not hiddenExpansionDirectives [directiveType]
+		local comment = #self.CurrentExpansions > 0 or directiveType
 		if directiveType then
-			addToExpansions = false
 			if directiveType == "import" then
 				if not directiveArguments then
 					self.Errors [#self.Errors + 1] = "Expected file name at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
 				else
-					self:ImportFile (directiveArguments)
+					if not self:ImportFile (directiveArguments) then
+						self.Errors [#self.Errors + 1] = "Cannot import \"" .. directiveArguments .. "\" at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
+					end
 				end
 			elseif directiveType == "define" then
 				if not directiveArguments then
@@ -419,24 +362,42 @@ function Context:ProcessCode (code)
 				else
 					self:PushExpansionDefinition (explodedArguments)
 				end
-			elseif directiveType == "expand" then
-				addToExpansions = true
 			elseif directiveType == "end" then
 				self:PopExpansionDefinition ()
+			elseif directiveType == "expand" then
+				if self.ProcessMode == ProcessMode.Expand and
+					#self.CurrentExpansions == 0 then
+					local spacing = line:sub (1, line:find ("@") - 1)
+					local expansionError = self:AppendExpansion (lineNumber, spacing, explodedArguments)
+					if expansionError then
+						self.Errors [#self.Errors + 1] = expansionError .. " at line " .. tostring (lineNumber) .. ", char " .. tostring (line:len () + 1)
+					end
+					hideLine = true
+				end
 			else
-				addToExpansions = true
+				comment = false
 			end
-		else
+		end
+		if addToExpansions and
+			not string.find (line, "^[ \t]*#") and
+			#self.CurrentExpansions > 0 then
 			line = line:gsub (" +%(", "(")
 			line = line:gsub (" +%[", "[")
-			if string.find (line, "^[ \t]*#") then
-				addToExpansions = false
-			end
-		end
-		if addToExpansions and #self.CurrentExpansions > 0 then
 			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
 		end
-		self.Lines [#self.Lines + 1] = line
+		hideLine = hideLine or self.ProcessMode == ProcessMode.Import or (self.ExpansionMode == ExpansionMode.Compact and comment)
+		if not hideLine then
+			if comment then
+				if directiveType then
+					local directiveStart = line:find ("@")
+					line = line:sub (1, directiveStart - 1) .. "#@" .. line:sub (directiveStart)
+				else
+					line = "#@" .. line
+				end
+			end
+			self.Lines [#self.Lines + 1] = line
+			self.LineMap [#self.Lines] = lineNumber
+		end
 	end
 end
 

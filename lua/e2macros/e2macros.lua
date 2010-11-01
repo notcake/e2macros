@@ -14,7 +14,7 @@ include ("process.lua")
 function E2Macros.transfer (code)
 	local context = E2Macros.Context ()
 	context:SetProcessMode (E2Macros.ProcessMode.Expand)
-	context:ExpandCode (code)
+	context:ProcessCode (code)
 	code = table.concat (context:GetLines (), "\n")
 	
 	E2Macros.Backup.transfer (code)
@@ -24,7 +24,7 @@ end
 function E2Macros.wire_expression2_validate (code)
 	local context = E2Macros.Context ()
 	context:SetProcessMode (E2Macros.ProcessMode.Expand)
-	context:ExpandCode (code)
+	context:ProcessCode (code)
 	code = table.concat (context:GetLines (), "\n")
 	local error = context:GetFirstError ()
 	if error then
@@ -106,7 +106,7 @@ concommand.Add ("e2macros_expand", function (_, _, args)
 	local context = E2Macros.Context ()
 	context:SetProcessMode (E2Macros.ProcessMode.Expand)
 	context:SetExpansionMode (compact and E2Macros.ExpansionMode.Compact or E2Macros.ExpansionMode.Reversible)
-	context:ExpandCode (code)
+	context:ProcessCode (code)
 	local errors = context:GetErrors ()
 	if #errors > 0 then
 		print (tostring (#errors) .. " errors:")
@@ -116,7 +116,7 @@ concommand.Add ("e2macros_expand", function (_, _, args)
 	end
 	code = table.concat (context:GetLines (), "\n")
 	file.Write ("Expression2/macros/expanded/" .. path, code)
-	print ("Wrote file to macros/expanded/" .. path .. ".")
+	print ("Wrote file to macros/expanded/" .. path .. " (" .. tostring (#context:GetLines ()) .. " lines).")
 end, function (command, args)
 	args = args:Trim ():gsub ("\\", "/")
 	local args = E2Macros.ExplodeQuotedLine (args)
@@ -129,12 +129,8 @@ end, function (command, args)
 	end
 	local path = args [#args]
 	local compact = nil
-	if tonumber (args [1]) or
-		args [1]:lower () == "true" or
-		args [1]:lower () == "false" then
+	if #args > 1 then
 		compact = not util.tobool (args [1])
-		path = path:sub (args [1]:len () + 2)
-		Msg ("\"" .. path .. "\"")
 	end
 	local files = file.Find ("Expression2/" .. path .. "*")
 	if path:find ("/") then
