@@ -13,6 +13,7 @@ include ("process.lua")
 -- Client to server
 function E2Macros.transfer (code)
 	local context = E2Macros.Context ()
+	context:SetProcessMode (E2Macros.ProcessMode.Expand)
 	context:ExpandCode (code)
 	code = table.concat (context:GetLines (), "\n")
 	
@@ -22,6 +23,7 @@ end
 -- Client code validation
 function E2Macros.wire_expression2_validate (code)
 	local context = E2Macros.Context ()
+	context:SetProcessMode (E2Macros.ProcessMode.Expand)
 	context:ExpandCode (code)
 	code = table.concat (context:GetLines (), "\n")
 	local error = context:GetFirstError ()
@@ -65,6 +67,7 @@ function E2Macros.wire_expression2_download (um)
 			download.code = download.code .. codePart
 			
 			local context = E2Macros.Context ()
+			context:SetProcessMode (E2Macros.ProcessMode.Contract)
 			context:ContractCode (download.code)
 			download.code = table.concat (context:GetLines (), "\n")
 			um = {
@@ -79,6 +82,83 @@ function E2Macros.wire_expression2_download (um)
 	end
 	E2Macros.Backup.wire_expression2_download (um)
 end
+
+concommand.Add ("e2macros_expand", function (_, _, args)
+	if #args == 0 or
+		#args > 2 then
+		print ("e2macros_expand <path>")
+		print ("e2macros_expand [preserve directives 0/1] <path>")
+		return
+	end
+	local path = args [#args]
+	if path:sub (-4):lower () ~= ".txt" then
+		path = path .. ".txt"
+	end
+	local compact = true
+	if #args == 2 then
+		compact = not util.tobool (args [1])
+	end
+	local code = file.Read ("Expression2/" .. path)
+	if not code then
+		print ("Unable to find " .. path .. ".")
+		return
+	end
+	local context = E2Macros.Context ()
+	context:SetProcessMode (E2Macros.ProcessMode.Expand)
+	context:SetExpansionMode (compact and E2Macros.ExpansionMode.Compact or E2Macros.ExpansionMode.Reversible)
+	context:ExpandCode (code)
+	local errors = context:GetErrors ()
+	if #errors > 0 then
+		print (tostring (#errors) .. " errors:")
+	end
+	for _, error in ipairs (errors) do
+		print (error)
+	end
+	code = table.concat (context:GetLines (), "\n")
+	file.Write ("Expression2/macros/expanded/" .. path, code)
+	print ("Wrote file to macros/expanded/" .. path .. ".")
+end, function (command, args)
+	args = args:Trim ():gsub ("\\", "/")
+	local args = E2Macros.ExplodeQuotedLine (args)
+	args [1] = args [1] or ""
+	if args [#args]:sub (1, 1) == "\"" then
+		args [#args] = args [#args]:sub (2)
+	end
+	if args [#args]:sub (-1) == "\"" then
+		args [#args] = args [#args]:sub (1, -2)
+	end
+	local path = args [#args]
+	local compact = nil
+	if tonumber (args [1]) or
+		args [1]:lower () == "true" or
+		args [1]:lower () == "false" then
+		compact = not util.tobool (args [1])
+		path = path:sub (args [1]:len () + 2)
+		Msg ("\"" .. path .. "\"")
+	end
+	local files = file.Find ("Expression2/" .. path .. "*")
+	if path:find ("/") then
+		path = path:sub (1, -path:reverse ():find ("/"))
+	else
+		path = ""
+	end
+	if compact ~= nil then
+		compact = compact and "0 " or "1 "
+	else
+		compact = ""
+	end
+	local autocomplete = {}
+	local pathHasSpaces = path:find (" ")
+	for _, file in ipairs (files) do
+		local quotesRequired = pathHasSpaces or file:find (" ")
+		if pathHasSpaces or file:find (" ") then
+			autocomplete [#autocomplete + 1] = command .. " " .. compact .. "\"" .. path .. file .. "\""
+		else
+			autocomplete [#autocomplete + 1] = command .. " " .. compact .. path .. file
+		end
+	end
+	return autocomplete
+end, "Expands the macros in an Expression 2 script and saves it in Expression2/macros/expanded.")
 
 concommand.Add ("e2macros_rehook", function (_, _, args)
 	if args [1] ~= "1" then

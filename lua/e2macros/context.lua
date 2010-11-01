@@ -1,6 +1,17 @@
 local Context = {}
 Context.__index = Context
 
+local ProcessMode = {}
+E2Macros.ProcessMode = ProcessMode
+ProcessMode.Import = 1
+ProcessMode.Expand = 2
+ProcessMode.Contract = 3
+
+local ExpansionMode = {}
+E2Macros.ExpansionMode = ExpansionMode
+ExpansionMode.Reversible = 1
+ExpansionMode.Compact = 2
+
 local directives = {
 	["define"] = true,
 	["end"] = true,
@@ -22,6 +33,10 @@ function Context:ctor (fileName)
 	self.LastProcessTime = 0
 	self.Code = nil
 	
+	self.ExpansionCount = 0
+	
+	self.ProcessMode = ProcessMode.Import
+	self.ExpansionMode = ExpansionMode.Reversible
 	self:Reset ()
 end
 
@@ -55,6 +70,9 @@ end
 
 -- Expands a macro recursively
 function Context:AppendExpansion (lineNumber, spacing, expansionArguments, alreadyExpanded)
+	local indent = self.ExpansionMode ~= ExpansionMode.Compact and "    " or ""
+	
+	self.ExpansionCount = self.ExpansionCount + 1
 	local expansionName = expansionArguments [1]
 	if not expansionName then
 		return "Expansion name is missing"
@@ -67,7 +85,7 @@ function Context:AppendExpansion (lineNumber, spacing, expansionArguments, alrea
 	alreadyExpanded [expansionName] = true
 	local expansionEntry = self:LookupExpansionRecursive (expansionName)
 	if expansionEntry then
-		if #alreadyExpanded == 1 then
+		if #alreadyExpanded == 1 and self.ExpansionMode ~= ExpansionMode.Compact then
 			local originalLine = self.OriginalLines [lineNumber]
 			self.Lines [#self.Lines + 1] = spacing .. "#@@mexpanded" .. originalLine:sub (originalLine:find ("expand") + string.len ("expand"))
 			self.LineMap [#self.Lines] = lineNumber
@@ -102,7 +120,7 @@ function Context:AppendExpansion (lineNumber, spacing, expansionArguments, alrea
 			local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
 			if directiveType then
 				if directiveType == "expand" then
-					local expansionError = self:AppendExpansion (lineNumber, spacing .. "    ", explodedArguments, alreadyExpanded)
+					local expansionError = self:AppendExpansion (lineNumber, spacing .. line:sub (1, line:find ("@") - 1) .. indent, explodedArguments, alreadyExpanded)
 					if expansionError then
 						alreadyExpanded [#alreadyExpanded] = nil
 						return expansionError .. " in expansion \"" .. expansionName .. "\""
@@ -113,12 +131,12 @@ function Context:AppendExpansion (lineNumber, spacing, expansionArguments, alrea
 					self.LineTrace [#self.Lines] = expansionTrace
 				end
 			else
-				self.Lines [#self.Lines + 1] = spacing .. "    " .. line
+				self.Lines [#self.Lines + 1] = spacing .. indent .. line
 				self.LineMap [#self.Lines] = lineNumber
 				self.LineTrace [#self.Lines] = expansionTrace
 			end
 		end
-		if #alreadyExpanded == 1 then
+		if #alreadyExpanded == 1 and self.ExpansionMode ~= ExpansionMode.Compact then
 			self.Lines [#self.Lines + 1] = spacing .. "#@@mendexp"
 			self.LineMap [#self.Lines] = lineNumber
 		end
@@ -158,11 +176,11 @@ end
 -- Collapses expanded macros
 function Context:ContractCode (code)
 	self.Code = code
-	local lines = string.Explode ("\n", code)
+	self.OriginalLines = string.Explode ("\n", code)
 	local expansionLevel = 0
 	local defineLevel = 0
 	
-	for _, line in ipairs (lines) do
+	for _, line in ipairs (self.OriginalLines) do
 		local directiveType, directiveArguments = E2Macros.ProcessExpandedLine (line)
 		local hideLine = expansionLevel > 0
 		local uncomment = defineLevel > 0 or (directiveType and true)
@@ -207,10 +225,9 @@ end
 -- Expands macros for validation and sending to the server
 function Context:ExpandCode (code)
 	self.Code = code
-	local lines = string.Explode ("\n", code)
-	self.OriginalLines = lines
+	self.OriginalLines = string.Explode ("\n", code)
 	
-	for lineNumber, line in ipairs (lines) do
+	for lineNumber, line in ipairs (self.OriginalLines) do
 		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
 		local hideLine = false
 		local addToExpansions = true
@@ -248,9 +265,12 @@ function Context:ExpandCode (code)
 				comment = false
 			end
 		end
-		if addToExpansions then
+		if addToExpansions and #self.CurrentExpansions > 0 then
+			line = line:gsub (" +%(", "(")
+			line = line:gsub (" +%[", "[")
 			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
 		end
+		hideLine = hideLine or (self.ExpansionMode == ExpansionMode.Compact and comment)
 		if not hideLine then
 			if comment then
 				if directiveType then
@@ -264,6 +284,10 @@ function Context:ExpandCode (code)
 			self.LineMap [#self.Lines] = lineNumber
 		end
 	end
+end
+
+function Context:GetErrors ()
+	return self.Errors
 end
 
 function Context:GetFirstError ()
@@ -377,8 +401,8 @@ function Context:ProcessCode (code)
 	self.LastProcessTime = SysTime ()
 	
 	self.Code = code
-	local lines = string.Explode ("\n", code)
-	for _, line in ipairs (lines) do
+	self.OriginalLines = string.Explode ("\n", code)
+	for _, line in ipairs (self.OriginalLines) do
 		local directiveType, directiveArguments, explodedArguments = E2Macros.ProcessLine (line)
 		local addToExpansions = true
 		if directiveType then
@@ -409,7 +433,7 @@ function Context:ProcessCode (code)
 				addToExpansions = false
 			end
 		end
-		if addToExpansions then
+		if addToExpansions and #self.CurrentExpansions > 0 then
 			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
 		end
 		self.Lines [#self.Lines + 1] = line
@@ -470,4 +494,12 @@ function Context:Reset ()
 		ArgumentCount = 0,
 		Arguments = {}
 	}
+end
+
+function Context:SetExpansionMode (expansionMode)
+	self.ExpansionMode = expansionMode
+end
+
+function Context:SetProcessMode (processMode)
+	self.ProcessMode = processMode
 end
