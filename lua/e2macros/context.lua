@@ -381,9 +381,7 @@ function Context:ProcessCode (code)
 		if addToExpansions and
 			not string.find (line, "^[ \t]*#") and
 			#self.CurrentExpansions > 0 then
-			line = line:gsub (" +%(", "(")
-			line = line:gsub (" +%[", "[")
-			self:AddExpansionDefinitionLine (line, directiveType, explodedArguments)
+			self:AddExpansionDefinitionLine (line:gsub (" +%(", "("):gsub (" +%[", "["), directiveType, explodedArguments)
 		end
 		hideLine = hideLine or self.ProcessMode == ProcessMode.Import or (self.ExpansionMode == ExpansionMode.Compact and comment)
 		if not hideLine then

@@ -146,7 +146,6 @@ end, function (command, args)
 	local autocomplete = {}
 	local pathHasSpaces = path:find (" ")
 	for _, file in ipairs (files) do
-		local quotesRequired = pathHasSpaces or file:find (" ")
 		if pathHasSpaces or file:find (" ") then
 			autocomplete [#autocomplete + 1] = command .. " " .. compact .. "\"" .. path .. file .. "\""
 		else
