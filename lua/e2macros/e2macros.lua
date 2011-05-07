@@ -10,6 +10,19 @@ end
 include ("context.lua")
 include ("process.lua")
 
+function E2Macros.findupvalue (func, varname)
+	local name, value
+	local i = 1
+	while true do
+		name, value = debug.getupvalue (func, i)
+		if name == varname then
+			return value, i
+		end
+		i = i + 1
+	end
+	return nil, i
+end
+
 -- Client to server
 function E2Macros.transfer (code)
 	local context = E2Macros.Context ()
@@ -201,19 +214,27 @@ hook.Add ("Think", "E2MacrosInit", function ()
 		return pcall (self.Process, self, code)
 	end
 
-	if not transfer or
+	if not wire_expression2_upload or
 		not wire_expression2_validate then
 		return
 	end
-	if not E2Macros.Backup.transfer then
-		E2Macros.Backup.transfer = transfer
+	
+	-- transfer
+	local transfer, transfer_idx = E2Macros.findupvalue (wire_expression2_upload, "transfer")
+	if transfer then
+		if not E2Macros.Backup.transfer then
+			E2Macros.Backup.transfer = transfer
+		end
+		debug.setupvalue (wire_expression2_upload, transfer_idx, E2Macros.transfer)
 	end
-	transfer = E2Macros.transfer
+	
+	-- wire_expression2_validate
 	if not E2Macros.Backup.wire_expression2_validate then
 		E2Macros.Backup.wire_expression2_validate = wire_expression2_validate
 	end
 	wire_expression2_validate = E2Macros.wire_expression2_validate
 	
+	-- wire_expression2_download
 	local name, hookTable = debug.getupvalue (usermessage.Hook, 2)
 	if name == "Hooks" then
 		local hook = hookTable ["wire_expression2_download"]
@@ -227,8 +248,8 @@ hook.Add ("Think", "E2MacrosInit", function ()
 	local name, vguiMetatables = debug.getupvalue (vgui.Register, 1)
 	if name == "PanelFactory" then
 		local editorMetatable = vguiMetatables ["Expression2Editor"]
-		local name, directives = debug.getupvalue (editorMetatable.SyntaxColorLine, 1)
-		if name == "directives" then
+		local directives = E2Macros.findupvalue (editorMetatable.SyntaxColorLine, "directives")
+		if directives then
 			directives ["@end"] = 0
 			directives ["@define"] = 0
 			directives ["@expand"] = 0
