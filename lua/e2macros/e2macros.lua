@@ -56,7 +56,7 @@ function E2Macros.wire_expression2_validate (code)
 			local realLineNumber, lineTrace = nil, nil
 			error:gsub ("line ([0-9]+)", function (match)
 				realLineNumber, lineTrace = context:RemapLine (tonumber (match))
-				originalLine = context:GetOriginalLine (realLineNumber)
+				originalLine = context:GetOriginalLine (realLineNumber) or ""
 				position = "at line " .. tostring (realLineNumber) .. ", char " .. tostring (originalLine:len () + 1)
 				return "line " .. tostring (realLineNumber)
 			end)
