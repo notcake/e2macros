@@ -235,8 +235,8 @@ hook.Add ("Think", "E2MacrosInit", function ()
 	wire_expression2_validate = E2Macros.wire_expression2_validate
 	
 	-- wire_expression2_download
-	local name, hookTable = debug.getupvalue (usermessage.Hook, 2)
-	if name == "Hooks" then
+	local hookTable = E2Macros.findupvalue (usermessage.Hook, "Hooks")
+	if hookTable then
 		local hook = hookTable ["wire_expression2_download"]
 		if not E2Macros.Backup.wire_expression2_download then
 			E2Macros.Backup.wire_expression2_download = hook.Function
@@ -245,8 +245,8 @@ hook.Add ("Think", "E2MacrosInit", function ()
 	end
 	
 	-- Syntax highlighting
-	local name, vguiMetatables = debug.getupvalue (vgui.Register, 1)
-	if name == "PanelFactory" then
+	local vguiMetatables = E2Macros.findupvalue (vgui.Register, "PanelFactory")
+	if vguiMetatables then
 		local editorMetatable = vguiMetatables ["Expression2Editor"]
 		local directives = E2Macros.findupvalue (editorMetatable.SyntaxColorLine, "directives")
 		if directives then
